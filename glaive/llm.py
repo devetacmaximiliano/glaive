@@ -46,9 +46,16 @@ class Usage:
         )
 
 
-def _is_model_unavailable(status_code: int, body_text: str) -> bool:
-    """Detecta el 404 particular de OpenRouter cuando un modelo (gratis, típicamente)
-    dejó de estar disponible — la capa free se rota sin aviso ni SLA."""
+def _should_fallback(status_code: int, body_text: str) -> bool:
+    """Errores tras los que vale la pena reintentar con el modelo de respaldo.
+
+    Dos casos frecuentes en la capa gratuita de OpenRouter, sin SLA:
+    - 404 "unavailable": el modelo se retiró de la capa free.
+    - 429: el pool compartido del modelo está rate-limited en ese momento
+      (más común que el 404 — lo vimos en vivo probando gemma-4-31b:free).
+    """
+    if status_code == 429:
+        return True
     return status_code == 404 and "unavailable" in body_text.lower()
 
 
@@ -168,7 +175,7 @@ class LLMClient:
             messages, tools, model, cache, stable_len, max_tokens, temperature, stream=False
         )
         resp = self._client.post("/chat/completions", json=payload)
-        if self.fallback_model and _is_model_unavailable(resp.status_code, resp.text):
+        if self.fallback_model and _should_fallback(resp.status_code, resp.text):
             payload = {**payload, "model": self.fallback_model}
             resp = self._client.post("/chat/completions", json=payload)
         if resp.status_code >= 400:
@@ -237,7 +244,7 @@ class StreamResult:
                     if (
                         not tried_fallback
                         and self._fallback_model
-                        and _is_model_unavailable(resp.status_code, resp.text)
+                        and _should_fallback(resp.status_code, resp.text)
                     ):
                         # El modelo (gratis, típicamente) dejó de estar disponible.
                         # Reabrimos la conexión con el de respaldo, una sola vez.
