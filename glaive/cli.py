@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import click
 
 from glaive.config import Config
+from glaive.dashboard import start_multi_dashboard
 from glaive.repl import run_auto, run_repl
 from glaive.report import write_report
 from glaive.state import Store
@@ -81,6 +83,27 @@ def report(session_id: str, out: str | None) -> None:
     out_path = Path(out) if out else cfg.runs_dir / session_id / "report.md"
     write_report(store, out_path)
     click.echo(f"Reporte escrito en {out_path}")
+
+
+@main.command()
+@click.option("--port", default=0, type=int, help="Puerto (default: uno libre al azar).")
+def dashboard(port: int) -> None:
+    """Dashboard con TODAS las sesiones locales (runs/*) — no gasta tokens.
+
+    A diferencia del que se abre solo con `glaive run`, este escanea todo
+    `runs/` y deja elegir a qué sesión mirar; sirve para seguir varios
+    engagements en simultáneo o revisar uno viejo sin retomarlo.
+    """
+    cfg = Config.load()
+    url, server = start_multi_dashboard(cfg.runs_dir, port=port)
+    click.echo(f"Dashboard en {url}  (Ctrl+C para cerrar)")
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.shutdown()
 
 
 @main.command()
