@@ -1,0 +1,75 @@
+# Reporte de Penetration Testing
+
+**Target:** {{ session.get('target', '—') }}
+**Alcance:** {{ session.get('scope', '—') }}
+**Generado:** {{ generated_at }}
+**Estado del engagement:** {{ session.get('status', '—') }}
+
+## Resumen ejecutivo
+
+Se identificaron **{{ findings|length }}** hallazgo(s):
+
+| Severidad | Cantidad |
+|---|---|
+{%- for sev, label in severity_label.items() %}
+| {{ label }} | {{ counts.get(sev, 0) }} |
+{%- endfor %}
+
+{% if not findings -%}
+No se confirmaron hallazgos dentro del alcance evaluado.
+{% endif -%}
+
+## Hallazgos
+
+{% for f in findings -%}
+### [{{ severity_label.get(f.severity, f.severity)|upper }}] {{ f.title }} {% if f.status == 'potential' %}*(potencial — no confirmado)*{% endif %}
+
+- **ID:** #{{ f.id }}
+- **Estado:** {{ f.status }}
+- **Endpoint/Activo:** `{{ f.endpoint }}`
+{%- if f.cwe %}
+- **CWE:** {{ f.cwe }}
+{%- endif %}
+{%- if f.wstg %}
+- **WSTG:** {{ f.wstg }}
+{%- endif %}
+{%- if f.owasp %}
+- **OWASP:** {{ f.owasp }}
+{%- endif %}
+{%- if f.cvss_vector %}
+- **CVSS 3.1:** {{ f.cvss_score }} — `{{ f.cvss_vector }}`
+{%- endif %}
+{%- if f.chains_from %}
+- **Deriva de:** hallazgo #{{ f.chains_from }}
+{%- endif %}
+
+**Descripción**
+
+{{ f.description }}
+
+**Evidencia**
+
+```
+{{ f.evidence }}
+```
+
+{% if f.poc -%}
+**Pasos para reproducir**
+
+{{ f.poc }}
+{% endif -%}
+{% if f.remediation -%}
+**Remediación recomendada**
+
+{{ f.remediation }}
+{% endif %}
+---
+
+{% endfor -%}
+
+## Metodología
+
+Evaluación realizada de forma asistida por agente autónomo (`glaive`), siguiendo
+metodología estándar de reconocimiento, mapeo, verificación activa de vulnerabilidades
+y confirmación de hallazgos con evidencia reproducible antes de su inclusión en este
+reporte.
