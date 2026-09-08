@@ -321,7 +321,10 @@ async def _async_repl(
 
     console.print("Escribí instrucciones. /help para comandos, /exit para salir.\n")
 
-    with patch_stdout():
+    # raw=True: sin esto, patch_stdout reprocesa lo que se imprime mientras el
+    # prompt está activo y puede corromper los códigos ANSI de rich (se ven como
+    # "?[35m..." en vez de color) — con raw=True los deja pasar tal cual a la consola.
+    with patch_stdout(raw=True):
         while True:
             # Lanzar un turno si hay algo encolado y no hay turno corriendo.
             if turn_future is None and pending and not ask.is_pending():
