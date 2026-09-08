@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -201,11 +201,12 @@ class LLMClient:
         stable_len: int | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.4,
+        cancel: "Callable[[], bool] | None" = None,
     ) -> "StreamResult":
         payload = self._build_payload(
             messages, tools, model, cache, stable_len, max_tokens, temperature, stream=True
         )
-        return StreamResult(self._client, payload, self.fallback_model)
+        return StreamResult(self._client, payload, self.fallback_model, cancel)
 
     def close(self) -> None:
         self._client.close()
@@ -221,11 +222,16 @@ class StreamResult:
     """
 
     def __init__(
-        self, client: httpx.Client, payload: dict[str, Any], fallback_model: str | None = None
+        self,
+        client: httpx.Client,
+        payload: dict[str, Any],
+        fallback_model: str | None = None,
+        cancel: Callable[[], bool] | None = None,
     ):
         self._client = client
         self._payload = payload
         self._fallback_model = fallback_model
+        self._cancel = cancel or (lambda: False)
         self.message: dict[str, Any] = {"role": "assistant", "content": ""}
         self.finish_reason: str = ""
         self.raw_usage: dict[str, Any] = {}
@@ -255,6 +261,9 @@ class StreamResult:
                     raise RuntimeError(f"OpenRouter {resp.status_code}: {resp.text[:500]}")
 
                 for line in resp.iter_lines():
+                    if self._cancel():
+                        self.finish_reason = "cancelled"
+                        break
                     if not line or not line.startswith("data:"):
                         continue
                     data = line[len("data:") :].strip()

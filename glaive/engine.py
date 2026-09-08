@@ -35,6 +35,7 @@ ToolCallCallback = Callable[[str, dict[str, Any]], None]
 ToolResultCallback = Callable[[str], None]
 SubagentEventCallback = Callable[[str, str], None]
 AskUserCallback = Callable[[str], str]
+CancelCallback = Callable[[], bool]
 
 
 def _render_system_prompt(target: str, scope: str, mode: str) -> str:
@@ -91,14 +92,27 @@ class Session:
         on_tool_result: ToolResultCallback | None = None,
         on_subagent_event: SubagentEventCallback | None = None,
         on_ask_user: AskUserCallback | None = None,
+        should_cancel: CancelCallback | None = None,
     ) -> bool:
-        """Ejecuta un turno completo. Devuelve True si el agente llamó `finish`."""
+        """Ejecuta un turno completo. Devuelve True si el agente llamó `finish`.
+
+        ``should_cancel`` se consulta entre hops, dentro del stream del LLM y
+        antes de cada tool call: si devuelve True, el turno se corta de forma
+        ordenada (los tool_calls pendientes se cierran con un resultado
+        "[interrumpido]" para no dejar el historial inconsistente).
+        """
         self._on_subagent_event = on_subagent_event
         self._on_ask_user = on_ask_user
+        cancel = should_cancel or (lambda: False)
         self.messages.append({"role": "user", "content": user_text})
         finished = False
+        cancelled = False
 
         for _ in range(_MAX_TOOL_HOPS):
+            if cancel():
+                cancelled = True
+                break
+            self.store.set_activity("thinking")
             state_msg = {"role": "user", "content": self.store.compact_state()}
             payload = maybe_compact(
                 [*self.messages, state_msg],
@@ -111,8 +125,14 @@ class Session:
             # (cambia en cada hop); todo lo anterior es el prefijo cacheable.
             stable_len = len(payload) - 1
 
-            stream = self.llm.stream(payload, tools=TOOL_SCHEMAS, stable_len=stable_len)
+            stream = self.llm.stream(
+                payload, tools=TOOL_SCHEMAS, stable_len=stable_len, cancel=cancel
+            )
+            streaming = False
             for chunk in stream:
+                if not streaming:
+                    self.store.set_activity("streaming")
+                    streaming = True
                 if on_text:
                     on_text(chunk)
             if stream.used_model and stream.used_model != self.cfg.model:
@@ -128,12 +148,29 @@ class Session:
                 self.store.log_event("assistant_text", "", stream.message["content"][:300])
 
             tool_calls = stream.message.get("tool_calls") or []
+
+            if stream.finish_reason == "cancelled" or cancel():
+                cancelled = True
+                for call in tool_calls:  # cerrar pairing tool_call/tool_result
+                    self.messages.append(
+                        {"role": "tool", "tool_call_id": call["id"],
+                         "content": "[interrumpido por el usuario]"}
+                    )
+                break
+
             if not tool_calls:
                 break
 
             for call in tool_calls:
                 fn = call["function"]
                 name = fn["name"]
+                if cancelled or cancel():
+                    cancelled = True
+                    self.messages.append(
+                        {"role": "tool", "tool_call_id": call["id"],
+                         "content": "[interrumpido por el usuario]"}
+                    )
+                    continue
                 try:
                     args = json.loads(fn.get("arguments") or "{}")
                 except json.JSONDecodeError:
@@ -142,6 +179,7 @@ class Session:
                 self.store.log_event("tool_call", name, json.dumps(args)[:300])
                 if on_tool_call:
                     on_tool_call(name, args)
+                self.store.set_activity("running_tool", name)
                 result, is_finish = self.execute_tool(name, args)
                 self.store.log_event("tool_result", name, result[:300])
                 if on_tool_result:
@@ -150,13 +188,14 @@ class Session:
                 if is_finish:
                     finished = True
 
-            if finished:
+            if finished or cancelled:
                 break
 
         self._on_subagent_event = None
         self._on_ask_user = None
         self.store.replace_messages(self.messages)
         self.store.set_status(self.session_id, "finished" if finished else "running")
+        self.store.set_activity("done" if finished else ("interrupted" if cancelled else "idle"))
         return finished
 
     def _log_usage(self, raw_usage: dict[str, Any]) -> None:
@@ -172,5 +211,6 @@ class Session:
     def shutdown(self) -> None:
         if self.store.session().get("status") == "running":
             self.store.set_status(self.session_id, "stopped")
+        self.store.set_activity("paused")
         self.sandbox.stop()
         self.llm.close()

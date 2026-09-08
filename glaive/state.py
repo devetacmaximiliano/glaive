@@ -27,7 +27,8 @@ from glaive.cvss import try_score
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS session (
-    id TEXT PRIMARY KEY, target TEXT, scope TEXT, status TEXT, created_at REAL
+    id TEXT PRIMARY KEY, target TEXT, scope TEXT, status TEXT, created_at REAL,
+    activity TEXT DEFAULT 'idle', activity_detail TEXT DEFAULT '', last_activity_at REAL
 );
 CREATE TABLE IF NOT EXISTS findings (
     id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, severity TEXT, cwe TEXT,
@@ -70,6 +71,7 @@ SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 class Store:
     def __init__(self, db_path: Path):
         db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.db_path = Path(db_path)
         self._lock = threading.Lock()
         self.db = sqlite3.connect(str(db_path), check_same_thread=False)
         self.db.row_factory = sqlite3.Row
@@ -77,20 +79,47 @@ class Store:
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA busy_timeout=5000")
             self.db.executescript(_SCHEMA)
+            self._migrate()
             self.db.commit()
+
+    def _migrate(self) -> None:
+        """Agrega columnas nuevas a DBs de sesiones viejas (idempotente)."""
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(session)").fetchall()}
+        for name, ddl in (
+            ("activity", "ALTER TABLE session ADD COLUMN activity TEXT DEFAULT 'idle'"),
+            ("activity_detail", "ALTER TABLE session ADD COLUMN activity_detail TEXT DEFAULT ''"),
+            ("last_activity_at", "ALTER TABLE session ADD COLUMN last_activity_at REAL"),
+        ):
+            if name not in cols:
+                self.db.execute(ddl)
 
     # ---- sesión ----
     def init_session(self, sid: str, target: str, scope: str) -> None:
         with self._lock:
             self.db.execute(
-                "INSERT OR REPLACE INTO session VALUES (?,?,?,?,?)",
-                (sid, target, scope, "running", time.time()),
+                """INSERT OR REPLACE INTO session
+                   (id,target,scope,status,created_at,activity,activity_detail,last_activity_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (sid, target, scope, "running", time.time(), "idle", "", time.time()),
             )
             self.db.commit()
 
     def set_status(self, sid: str, status: str) -> None:
         with self._lock:
             self.db.execute("UPDATE session SET status=? WHERE id=?", (status, sid))
+            self.db.commit()
+
+    def set_activity(self, state: str, detail: str = "") -> None:
+        """Estado de actividad EN VIVO (pensando / streaming / ejecutando tool /
+        esperando input / esperando confirmación / compactando / pausado). Es
+        distinto del ``status`` de ciclo de vida (running/finished/stopped) y es
+        lo que el dashboard usa para mostrar si el agente trabaja o te espera.
+        Actualiza también ``last_activity_at`` como heartbeat."""
+        with self._lock:
+            self.db.execute(
+                "UPDATE session SET activity=?, activity_detail=?, last_activity_at=?",
+                (state, (detail or "")[:300], time.time()),
+            )
             self.db.commit()
 
     def session(self) -> dict[str, Any]:
@@ -263,6 +292,43 @@ class Store:
         with self._lock:
             rows = self.db.execute("SELECT payload FROM messages ORDER BY id").fetchall()
         return [json.loads(r["payload"]) for r in rows]
+
+    def conversation(self, limit: int = 400) -> list[dict[str, Any]]:
+        """Vista formateada de la conversación para el dashboard (read-only).
+
+        Aplana cada mensaje a {role, text, tools, created_at}. No incluye el
+        system prompt ni el resumen de <estado> (ruido para el lector humano).
+        """
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT role,payload,created_at FROM messages ORDER BY id"
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            m = json.loads(r["payload"])
+            role = m.get("role", "")
+            if role == "system":
+                continue
+            content = m.get("content")
+            text = content if isinstance(content, str) else self._flatten_parts(content)
+            if role == "user" and text.startswith("<estado>"):
+                continue
+            tools = []
+            for tc in m.get("tool_calls") or []:
+                fn = tc.get("function") or {}
+                tools.append({"name": fn.get("name", ""), "arguments": fn.get("arguments", "")})
+            out.append(
+                {"role": role, "text": text, "tools": tools, "created_at": r["created_at"]}
+            )
+        return out[-limit:]
+
+    @staticmethod
+    def _flatten_parts(content: Any) -> str:
+        if isinstance(content, list):
+            return " ".join(
+                str(p.get("text", "")) for p in content if isinstance(p, dict)
+            )
+        return "" if content is None else str(content)
 
     def compact_state(self) -> str:
         """Resumen compacto del estado que se inyecta al prompt cada turno."""

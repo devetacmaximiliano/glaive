@@ -54,6 +54,9 @@ def maybe_compact(
         f"[{m.get('role')}] {_flatten(m)}" for m in old if _flatten(m)
     )[:20_000]
 
+    if store is not None:
+        store.set_activity("compacting")
+
     summary_resp = llm.complete(
         [
             {

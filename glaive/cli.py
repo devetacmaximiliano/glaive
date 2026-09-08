@@ -107,6 +107,33 @@ def dashboard(port: int) -> None:
 
 
 @main.command()
+@click.option("--port", default=0, type=int, help="Puerto (default: uno libre al azar).")
+@click.option("--no-open", is_flag=True, help="No abrir el navegador automáticamente.")
+def dashboard(port: int, no_open: bool) -> None:
+    """Dashboard MULTI-sesión: muestra todas las sesiones de runs/ a la vez.
+
+    A diferencia del dashboard que abre `glaive run` (una sola sesión), este
+    escanea runs/*/state.db y te deja ver el trabajo de varios targets en
+    simultáneo desde un solo lugar. Es solo-lectura y no gasta tokens.
+    """
+    import time as _time
+
+    from glaive.dashboard import start_multi_dashboard
+
+    cfg = Config.load()
+    if not cfg.runs_dir.exists():
+        raise SystemExit(f"No hay sesiones todavía en {cfg.runs_dir}.")
+    url, server = start_multi_dashboard(cfg.runs_dir, port=port, open_browser=not no_open)
+    click.echo(f"Dashboard multi-sesión en {url}  (Ctrl-C para salir)")
+    try:
+        while True:
+            _time.sleep(1)
+    except KeyboardInterrupt:
+        server.shutdown()
+        click.echo("\nDashboard detenido.")
+
+
+@main.command()
 def sessions() -> None:
     """Lista las sesiones locales."""
     cfg = Config.load()
