@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-pdf = ["weasyprint>=62"]
+pdf = ["reportlab>=4.0", "pillow>=10.0"]
 
 [project.scripts]
 glaive = "glaive.cli:main"

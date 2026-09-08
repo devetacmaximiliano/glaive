@@ -37,7 +37,9 @@ _HELP = """\
   /findings          lista los hallazgos (potential/confirmed, con CVSS si tiene)
   /todos             lista los pendientes
   /scope             activos incluidos/pendientes en el alcance dinámico
-  /report [archivo]  genera el reporte (plantilla, no gasta tokens de LLM)
+  /report [archivo]  genera el reporte Markdown (plantilla, no gasta tokens de LLM)
+  /pdf [archivo]     genera el PDF con tu template (branding Devetac, solo hallazgos
+                     confirmed) — un par de preguntas cortas y listo, sin LLM
   /usage             tokens/costo consumidos en esta sesión
   /auto [n]          corre n turnos sin esperar tu input (default 10; te puede preguntar por scope)
   /stop              interrumpe el turno en curso
@@ -174,6 +176,39 @@ def _run_auto_turns(
         text = _AUTO_CONTINUE
 
 
+def _generate_pdf(session: Session, console: Console, arg: str) -> None:
+    """``/pdf`` — PDF con branding Devetac, 100% armado por script (reportlab),
+    nunca por el modelo. Solo corre cuando el usuario lo pide explícitamente.
+    Un par de preguntas cortas (texto plano, sin LLM) completan lo que glaive
+    no trackea (cliente, industria, fechas) — ENTER para omitir cualquiera."""
+    from glaive.pdf.engine import generate_report
+    from glaive.pdf.mapper import build_report_data
+
+    console.print("[dim]Datos para la portada — ENTER para omitir cualquiera.[/]")
+    try:
+        client_name = console.input("  Cliente: ").strip()
+        client_industry = console.input("  Industria: ").strip()
+        engagement_type = console.input("  Tipo de engagement [Black Box External Assessment]: ").strip()
+        start_date = console.input("  Fecha de inicio (AAAA-MM-DD): ").strip()
+        end_date = console.input("  Fecha de reporte (AAAA-MM-DD): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        console.print("\n[dim]Cancelado.[/]")
+        return
+
+    meta = {
+        "client_name": client_name,
+        "client_industry": client_industry,
+        "engagement_type": engagement_type,
+        "start_date": start_date,
+        "end_date": end_date,
+    }
+    data = build_report_data(session.store, session.cfg, meta)
+    out_path = Path(arg) if arg else session.cfg.runs_dir / session.session_id / "report.pdf"
+    console.print(f"[dim]Generando PDF con {len(data['findings'])} hallazgo(s) confirmado(s)...[/]")
+    generate_report(data, str(out_path))
+    console.print(f"[bold green]PDF listo:[/] {out_path}")
+
+
 def _handle_slash(cmd: str, session: Session, printer: Printer, console: Console) -> bool:
     """Comandos que NO corren turnos (solo lectura / utilidades). Devuelve True
     si hay que terminar la sesión. Los que corren turnos (/auto) se manejan afuera."""
@@ -218,6 +253,8 @@ def _handle_slash(cmd: str, session: Session, printer: Printer, console: Console
         out_path = Path(arg) if arg else session.cfg.runs_dir / session.session_id / "report.md"
         write_report(session.store, out_path)
         console.print(f"Reporte escrito en {out_path}")
+    elif name == "/pdf":
+        _generate_pdf(session, console, arg)
     elif name == "/usage":
         printer.usage(session.usage)
     else:

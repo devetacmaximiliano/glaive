@@ -205,14 +205,56 @@ def run(
 
 @main.command(context_settings=_CONTEXT_SETTINGS)
 @click.option("--session-id", required=True)
-@click.option("--out", default=None, help="Archivo de salida (default: runs/<id>/report.md)")
-def report(session_id: str, out: str | None) -> None:
-    """Genera el reporte Markdown de una sesión ya corrida (sin usar el LLM)."""
+@click.option("--out", default=None, help="Archivo de salida (default: runs/<id>/report.md o .pdf con --pdf)")
+@click.option("--pdf", "as_pdf", is_flag=True, help="Generar PDF (branding Devetac) en vez del Markdown.")
+@click.option("--client-name", default="", help="Solo con --pdf: nombre del cliente en la portada.")
+@click.option("--client-industry", default="", help="Solo con --pdf: industria del cliente.")
+@click.option("--engagement-type", default="", help="Solo con --pdf (default: Black Box External Assessment).")
+@click.option("--start-date", default="", help="Solo con --pdf, formato AAAA-MM-DD (default: creación de la sesión).")
+@click.option("--end-date", default="", help="Solo con --pdf, formato AAAA-MM-DD (default: hoy).")
+@click.option(
+    "--include-potential", is_flag=True,
+    help="Solo con --pdf: incluir también hallazgos potential (marcados), no solo confirmed.",
+)
+def report(
+    session_id: str,
+    out: str | None,
+    as_pdf: bool,
+    client_name: str,
+    client_industry: str,
+    engagement_type: str,
+    start_date: str,
+    end_date: str,
+    include_potential: bool,
+) -> None:
+    """Genera el reporte de una sesión ya corrida — Markdown por defecto, PDF con --pdf.
+
+    Ambos son 100% determinísticos: arman el documento a partir de los
+    hallazgos ya guardados, sin ninguna llamada al LLM.
+    """
     cfg = Config.load()
     db_path = cfg.runs_dir / session_id / "state.db"
     if not db_path.exists():
         raise SystemExit(f"No se encontró la sesión '{session_id}' en {cfg.runs_dir}")
     store = Store(db_path)
+
+    if as_pdf:
+        from glaive.pdf.engine import generate_report
+        from glaive.pdf.mapper import build_report_data
+
+        meta = {
+            "client_name": client_name,
+            "client_industry": client_industry,
+            "engagement_type": engagement_type,
+            "start_date": start_date,
+            "end_date": end_date,
+        }
+        data = build_report_data(store, cfg, meta, include_potential=include_potential)
+        out_path = Path(out) if out else cfg.runs_dir / session_id / "report.pdf"
+        generate_report(data, str(out_path))
+        click.echo(f"PDF escrito en {out_path}")
+        return
+
     out_path = Path(out) if out else cfg.runs_dir / session_id / "report.md"
     write_report(store, out_path)
     click.echo(f"Reporte escrito en {out_path}")

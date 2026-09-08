@@ -31,6 +31,9 @@ class Config:
     tool_output_chars: int
     compact_tokens: int
     runs_dir: Path
+    pdf_auditor_name: str
+    pdf_auditor_role: str
+    pdf_company: str
 
     @classmethod
     def load(cls) -> "Config":
@@ -51,6 +54,9 @@ class Config:
             tool_output_chars=_int("GLAIVE_TOOL_OUTPUT_CHARS", 2000),
             compact_tokens=_int("GLAIVE_CONTEXT_COMPACT_TOKENS", 120_000),
             runs_dir=Path(os.environ.get("GLAIVE_RUNS_DIR", "runs")).resolve(),
+            pdf_auditor_name=os.environ.get("GLAIVE_AUDITOR_NAME", "").strip(),
+            pdf_auditor_role=os.environ.get("GLAIVE_AUDITOR_ROLE", "").strip(),
+            pdf_company=os.environ.get("GLAIVE_PDF_COMPANY", "Devetac").strip(),
         )
 
     def require_key(self) -> None:
